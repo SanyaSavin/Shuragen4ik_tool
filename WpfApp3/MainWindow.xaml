@@ -11,6 +11,8 @@
     <Window.Resources>
         <local:EnumToBooleanConverter x:Key="EnumToBoolConverter"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <local:BoolToColorConverter x:Key="BoolToColor"/>
+        <local:BoolToBoldConverter x:Key="BoolToBold"/>
         <Style x:Key="HeaderStyle" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#B388FF"/>
             <Setter Property="FontSize" Value="13"/>
@@ -281,12 +283,9 @@
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text="СИСТЕМА И ДРАЙВЕРЫ" Style="{StaticResource HeaderStyle}"/>
+                <TextBlock Text="СИСТЕМА" Style="{StaticResource HeaderStyle}"/>
                 <Border Style="{StaticResource GroupBorder}">
                     <StackPanel>
-                        <CheckBox Content="Блокировать драйверы Windows Update" IsChecked="{Binding IsDriverUpdateDisabled}"/>
-                        <TextBlock Text="Не даёт самовольно Windows скачивать/обновлять драйвера из центра обновлений" Style="{StaticResource DescStyle}"/>
-
                         <CheckBox Content="Отключить SysMain (Superfetch)" IsChecked="{Binding IsSysMainDisabled}"/>
                         <TextBlock Text="Отключает кэширование ПО в ОЗУ. Полезно для SSD, вредно для HDD." Style="{StaticResource DescStyle}"/>
 
@@ -413,104 +412,11 @@
           Margin="0,20,0,0"/>
                         <TextBlock Text="Задача в планировщике каждый день продлевает паузу на 35 дней.&#x0a;Самый безопасный и стабильный способ — Store работает, ничего не ломается.&#x0a;Легко снимается одним кликом."
            Style="{StaticResource DescStyle}" Foreground="#AAFFAA"/>
+					<CheckBox Content="Блокировать драйверы Windows Update" IsChecked="{Binding IsDriverUpdateDisabled}"/>
+                        <TextBlock Text="Не даёт самовольно Windows скачивать/обновлять драйвера из центра обновлений" Style="{StaticResource DescStyle}"/>
                     </StackPanel>
                 </Border>
 
-                <TextBlock Text="СЛУЖБЫ" Style="{StaticResource HeaderStyle}" Foreground="#FF4500"/>
-                <Border Style="{StaticResource GroupBorder}" BorderBrush="#FF4500" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="⚙ Пресеты оптимизации служб" FontWeight="Bold" Foreground="#FF6B6B" Margin="0,0,0,10"/>
-                        <TextBlock Text="Выберите уровень оптимизации. Изменения применяются мгновенно, но для полного эффекта нужна перезагрузка.&#x0a;Снижает количество процессов и потребление ОЗУ."
-                   Foreground="#AAA" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,15"/>
-
-                        <Grid Margin="0,10,0,10">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="15"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-
-                            <Button Grid.Row="0" Grid.Column="0" Content="🌱 Лёгкая оптимизация" Height="50"
-                    Command="{Binding LiteServicesCommand}"
-                    Background="#2D3A2D" Foreground="#A0FFA0">
-                                <Button.Template>
-                                    <ControlTemplate TargetType="Button">
-                                        <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="8" BorderBrush="#00AA00" BorderThickness="1">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="b" Property="Background" Value="#3A4A3A"/>
-                                            </Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Button.Template>
-                            </Button>
-
-                            <Button Grid.Row="0" Grid.Column="2" Content="🎯 Средняя (рекомендуется для игр)" Height="50"
-                    Command="{Binding MediumServicesCommand}"
-                    Background="#2D2D3A" Foreground="#AAAAFF">
-                                <Button.Template>
-                                    <ControlTemplate TargetType="Button">
-                                        <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="8" BorderBrush="#5555FF" BorderThickness="1">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="b" Property="Background" Value="#3A3A4A"/>
-                                            </Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Button.Template>
-                            </Button>
-
-                            <Button Grid.Row="1" Grid.Column="0" Content="🔥 Экстремальная (только игры)" Height="50" Margin="0,10,0,0"
-                    Command="{Binding ExtremeServicesCommand}"
-                    Background="#3A1A1A" Foreground="#FFAAAA">
-                                <Button.Template>
-                                    <ControlTemplate TargetType="Button">
-                                        <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="8" BorderBrush="#FF4444" BorderThickness="1">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="b" Property="Background" Value="#4A2A2A"/>
-                                            </Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Button.Template>
-                            </Button>
-
-                            <Button Grid.Row="1" Grid.Column="2" Content="↶ Откат к исходным настройкам" Height="50" Margin="0,10,0,0"
-                    Command="{Binding RestoreOriginalServicesCommand}"
-                    Background="#3A2D2D" Foreground="#FFAAAA"
-                    Visibility="{Binding ShowRestoreServicesButton, Converter={StaticResource BoolToVis}}">
-                                <Button.Template>
-                                    <ControlTemplate TargetType="Button">
-                                        <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="8" BorderBrush="#FF6666" BorderThickness="1">
-                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="b" Property="Background" Value="#4A3A3A"/>
-                                            </Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Button.Template>
-                            </Button>
-
-                        </Grid>
-
-                        <TextBlock Text="• Лёгкая: только безопасные службы&#x0a;• Средняя: оптимально для игр 2025 года&#x0a;• Экстремальная: максимальная экономия (может сломать печать, Bluetooth и т.д.)&#x0a;• Откат: возвращает состояние ДО первого применения любого пресета"
-                   Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="0,15,0,0"/>
-                        <TextBlock Text="⚠ После любых изменений — перезагрузите ПК!" Foreground="#FF8888" FontSize="11" Margin="0,10,0,0"/>
-                    </StackPanel>
-                </Border>
 
 
 
@@ -593,6 +499,76 @@
                         </Grid>
                     </StackPanel>
                 </Border>
+
+
+				<TextBlock Text="MSI MODE (Message Signaled Interrupts)"
+           Style="{StaticResource HeaderStyle}"
+           Foreground="#00D4FF"/>
+
+				<Border Style="{StaticResource GroupBorder}" BorderBrush="#00D4FF" BorderThickness="1">
+					<StackPanel>
+				<TextBlock Text="MSI MODE"
+					   FontWeight="Bold"
+					   Foreground="#00FFAA"
+					   Margin="0,0,0,10"
+					   HorizontalAlignment="left"
+					   TextAlignment="Left"/>
+
+				<TextBlock Text="Функция MSI Mode позволяет оптимизировать обработку прерываний от видеокарты и звуковой карты, что заметно повышает плавность и отзывчивость системы в играх.
+Включение режима MSI для видеокарты (NVIDIA или AMD) практически всегда даёт положительный результат: уменьшаются микрофризы, улучшается плавность изображения, становится более чётким и быстрым управление мышью.
+Включение MSI для звуковой карты рекомендуется только в случае наличия проблем со звуком — щелчков, треска или прерывистости в наушниках/колонках во время игры.
+Настройки полностью безопасны, легко отключаются и не влияют на стабильность работы системы. Для большинства пользователей достаточно активировать режим только для видеокарты — это даёт максимальный эффект при минимальных действиях."
+				       Foreground="#AAA" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,15"
+				       HorizontalAlignment="Stretch"
+				       TextAlignment="Justify"/>
+
+						<Button Content="Обновить список устройств"
+								Height="35" Margin="0,0,0,10"
+								Background="#2D2D2D" Foreground="White"
+								Click="BtnRefreshMsiList_Click"/>
+
+						<ListView ItemsSource="{Binding MsiCapableDevices}"
+								  Height="220"
+								  Background="Transparent"
+								  BorderThickness="0">
+							<ListView.View>
+								<GridView>
+									<GridViewColumn Header="Вкл MSI" Width="90">
+										<GridViewColumn.CellTemplate>
+											<DataTemplate>
+												<CheckBox IsChecked="{Binding MsiCurrentlyEnabled, Mode=TwoWay}"
+														  IsEnabled="{Binding SupportsMsi}"
+														  Checked="MsiCheckBox_Changed"
+														  Unchecked="MsiCheckBox_Changed"/>
+											</DataTemplate>
+										</GridViewColumn.CellTemplate>
+									</GridViewColumn>
+
+									<GridViewColumn Header="Устройство" Width="380">
+										<GridViewColumn.CellTemplate>
+											<DataTemplate>
+												<TextBlock Text="{Binding DeviceName}"
+														   Foreground="{Binding IsRecommended, Converter={StaticResource BoolToColor}}"
+														   FontWeight="{Binding IsRecommended, Converter={StaticResource BoolToBold}}"/>
+											</DataTemplate>
+										</GridViewColumn.CellTemplate>
+									</GridViewColumn>
+
+									<GridViewColumn Header="Тип" Width="180">
+										<GridViewColumn.CellTemplate>
+											<DataTemplate>
+												<TextBlock Text="{Binding FriendlyName}" Foreground="#888"/>
+											</DataTemplate>
+										</GridViewColumn.CellTemplate>
+									</GridViewColumn>
+								</GridView>
+							</ListView.View>
+						</ListView>
+
+						<TextBlock Text="⚠ После изменения нужна перезагрузка!"
+								   Foreground="#FFAA00" FontSize="11" Margin="0,10,0,0"/>
+					</StackPanel>
+				</Border>
 
                 <TextBlock Text="ОБОИ" Style="{StaticResource HeaderStyle}" Foreground="#FFD700"/>
                 <Border Style="{StaticResource GroupBorder}">

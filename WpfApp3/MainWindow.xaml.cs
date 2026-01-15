@@ -17,6 +17,8 @@ using System.Windows.Media.Imaging;   // Картинки
 using System.Windows.Input; // Для ICommand
 using System.Windows.Data;
 using System.Globalization;
+using System.Text.Json;           // Для JsonSerializer
+using System.Windows.Media;       // Для SolidColorBrush, Colors
 
 
 
@@ -87,6 +89,7 @@ namespace WpfApp3
             LoadPowerPlans();
             LoadServicesList();
             OnPropertyChanged(nameof(IsDefenderDisabled));
+            LoadMsiDevicesSimple();
 
             BlockUpdatesCommand = new RelayCommand(async () =>
             {
@@ -141,7 +144,199 @@ namespace WpfApp3
 
         }
 
-        
+        // MSI режим
+        // В начало класса MainWindow, после других коллекций
+        public ObservableCollection<MsiDeviceItem> MsiCapableDevices { get; } = new();
+
+        // Модель остаётся той же (можно оставить старую)
+        public class MsiDeviceItem : INotifyPropertyChanged
+        {
+            public string DeviceName { get; set; } = "";
+            public string DeviceId { get; set; } = "";
+            public string FriendlyName { get; set; } = "";
+            public bool SupportsMsi { get; set; }
+            private bool _msiEnabled;
+            public bool MsiCurrentlyEnabled
+            {
+                get => _msiEnabled;
+                set { _msiEnabled = value; OnPropertyChanged(); }
+            }
+            public bool IsRecommended { get; set; }
+            public event PropertyChangedEventHandler? PropertyChanged;
+            protected void OnPropertyChanged([CallerMemberName] string? name = null) =>
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+
+        // Кнопка обновления списка
+        private async void BtnRefreshMsiList_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadMsiDevicesSimple();
+        }
+
+        // Упрощённая загрузка через PowerShell (самый надёжный способ)
+        private async Task LoadMsiDevicesSimple()
+        {
+            IsBusy = true;
+            AddLog("Запуск поиска устройств для MSI (через PowerShell)...");
+            MsiCapableDevices.Clear();
+
+            try
+            {
+                string psCommand = @"
+            Get-PnpDevice | Where-Object { $_.Class -eq 'Display' -or $_.Class -eq 'Media' -or $_.Class -eq 'Sound' } |
+            ForEach-Object {
+                $dev = $_
+                $instanceId = $dev.InstanceId
+                $msiPath = 'HKLM:\SYSTEM\CurrentControlSet\Enum\' + $instanceId.Replace('\','\\') + '\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties'
+                $msi = Get-ItemProperty -Path $msiPath -ErrorAction SilentlyContinue
+                [PSCustomObject]@{
+                    Name = $dev.FriendlyName
+                    InstanceId = $instanceId
+                    Class = $dev.Class
+                    MSISupported = if ($msi) { $msi.MSISupported } else { $null }
+                }
+            } | ConvertTo-Json -Compress";
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{psCommand}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                // Ensure OEM encoding for console output to correctly read Cyrillic on Russian Windows
+                psi.StandardOutputEncoding = Encoding.GetEncoding(866);
+                psi.StandardErrorEncoding = Encoding.GetEncoding(866);
+
+                using var process = Process.Start(psi);
+                string output = await process.StandardOutput.ReadToEndAsync();
+                await process.WaitForExitAsync();
+
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    AddLog("PowerShell не вернул данных. Запусти программу от имени администратора!");
+                    return;
+                }
+
+                // Новый безопасный парсинг
+                using var doc = JsonDocument.Parse(output);
+                var results = doc.RootElement.EnumerateArray();
+
+                int count = 0;
+                foreach (var element in results)
+                {
+                    string name = element.GetProperty("Name").GetString() ?? "Без имени";
+                    string id = element.GetProperty("InstanceId").GetString() ?? "";
+                    string cls = element.GetProperty("Class").GetString() ?? "";
+
+                    int? msiSupported = null;
+                    if (element.TryGetProperty("MSISupported", out var msiProp) && msiProp.ValueKind != JsonValueKind.Null)
+                    {
+                        msiSupported = msiProp.GetInt32();
+                    }
+
+                    // Показываем только видеокарты и аудиовыходы (динамики)
+                    bool isGpu = string.Equals(cls, "Display", StringComparison.OrdinalIgnoreCase);
+                    bool isAudioClass = string.Equals(cls, "Media", StringComparison.OrdinalIgnoreCase) || string.Equals(cls, "Sound", StringComparison.OrdinalIgnoreCase);
+
+                    bool isAudioOutput = false;
+                    if (isAudioClass)
+                    {
+                        var lower = name.ToLowerInvariant();
+                        if (lower.Contains("speaker") || lower.Contains("speakers") || lower.Contains("audio") || lower.Contains("realtek") || lower.Contains("high definition") || lower.Contains("nvidia") || lower.Contains("amd") || lower.Contains("intel"))
+                            isAudioOutput = true;
+                    }
+
+                    if (!isGpu && !isAudioOutput)
+                    {
+                        // Пропускаем устройства, которые не являются видеокартой или аудиовыходом
+                        continue;
+                    }
+
+                    string friendly = isGpu ? "Видеокарта" : "Аудиоустройство";
+                    bool recommended = isGpu || name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase) || name.Contains("AMD", StringComparison.OrdinalIgnoreCase) || name.Contains("Audio", StringComparison.OrdinalIgnoreCase);
+
+                    var msiItem = new MsiDeviceItem
+                    {
+                        DeviceName = name,
+                        DeviceId = id,
+                        FriendlyName = friendly,
+                        IsRecommended = recommended,
+                        SupportsMsi = msiSupported.HasValue,
+                        MsiCurrentlyEnabled = msiSupported == 1
+                    };
+
+                    Dispatcher.Invoke(() => MsiCapableDevices.Add(msiItem));
+                    count++;
+                }
+
+                AddLog($"Найдено {count} устройств (видеокарты + звук)");
+            }
+            catch (Exception ex)
+            {
+                AddLog($"Ошибка загрузки MSI-устройств: {ex.Message}");
+                AddLog("Убедись, что программа запущена от имени администратора!");
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        private void MsiCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb || cb.DataContext is not MsiDeviceItem item)
+                return;
+
+            if (!item.SupportsMsi)
+            {
+                AddLog($"Устройство «{item.DeviceName}» не поддерживает MSI-режим");
+                return;
+            }
+
+            bool desiredState = cb.IsChecked == true;
+
+            Task.Run(() =>
+            {
+                IsBusy = true;
+                string action = desiredState ? "ВКЛЮЧЕНИЕ" : "ОТКЛЮЧЕНИЕ";
+                Dispatcher.Invoke(() => AddLog($"MSI-режим → {action} для {item.DeviceName}..."));
+
+                try
+                {
+                    // Путь к реестру (совместим с PowerShell-вариантом)
+                    string regPath = $@"SYSTEM\CurrentControlSet\Enum\{item.DeviceId}\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties";
+
+                    using var key = Registry.LocalMachine.CreateSubKey(regPath, true);
+                    if (key == null)
+                        throw new Exception("Не удалось открыть/создать ветку реестра");
+
+                    key.SetValue("MSISupported", desiredState ? 1 : 0, RegistryValueKind.DWord);
+
+                    Dispatcher.Invoke(() => AddLog("Успешно применено! Требуется **перезагрузка** компьютера."));
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        AddLog($"Ошибка изменения MSI-режима: {ex.Message}");
+                        // Откатываем галочку в UI
+                        item.MsiCurrentlyEnabled = !desiredState;
+                    });
+                }
+                finally
+                {
+                    Dispatcher.Invoke(() => IsBusy = false);
+                }
+            });
+        }
+
+
+
+
+
 
 
         // === Пресеты служб (и бекап служб) ===
@@ -414,15 +609,7 @@ namespace WpfApp3
         {
             get
             {
-                // Быстрая и надёжная проверка статуса
-                try
-                {
-                    string output = RunCommandSync("powershell", "-Command \"(Get-MpComputerStatus -ErrorAction SilentlyContinue).AntivirusEnabled\"");
-                    if (output.Trim() == "True") return false;
-                }
-                catch { }
-
-                // Если PowerShell не ответил — fallback на реестр
+                // Проверяем реестр для определения состояния
                 if (GetRegistryInt(@"SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiSpyware", 0, RegRoot.HKLM) == 1)
                     return true;
 
@@ -2093,21 +2280,45 @@ namespace WpfApp3
 }
 
 
-public class RelayCommand : ICommand
-{
-    private readonly Action _execute;
-    private readonly Func<bool>? _canExecute;
 
-    public RelayCommand(Action execute, Func<bool>? canExecute = null)
+
+namespace WpfApp3
+{
+    public class RelayCommand : ICommand
     {
-        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
-        _canExecute = canExecute;
+        private readonly Action _execute;
+        private readonly Func<bool>? _canExecute;
+
+        public RelayCommand(Action execute, Func<bool>? canExecute = null)
+        {
+            _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+            _canExecute = canExecute;
+        }
+
+        public bool CanExecute(object? parameter) => _canExecute == null || _canExecute();
+
+        public void Execute(object? parameter) => _execute();
+
+        public event EventHandler? CanExecuteChanged;
     }
 
-    public bool CanExecute(object? parameter) => _canExecute == null || _canExecute();
+    public class BoolToColorConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return (bool)value ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Colors.LightGray);
+        }
 
-    public void Execute(object? parameter) => _execute();
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
+    }
 
-    public event EventHandler? CanExecuteChanged;
+    public class BoolToBoldConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return (bool)value ? FontWeights.Bold : FontWeights.Normal;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotImplementedException();
+    }
 }
-
