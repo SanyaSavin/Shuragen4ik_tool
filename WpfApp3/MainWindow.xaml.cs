@@ -83,11 +83,11 @@ namespace WpfApp3
                 MessageBox.Show("ОШИБКА: Запущена 32-битная версия.\nСкомпилируйте проект под x64!", "Архитектура", MessageBoxButton.OK, MessageBoxImage.Error);
 
             AddLog($"Добро пожаловать, {CurrentUserName}!");
-            AddLog("Shuragen4ik Tool v1.0 готов к работе.");
+            AddLog("Shuragen4ik Tool v1.3 готов к работе.");
 
             LoadWallpapers();
             LoadPowerPlans();
-            LoadServicesList();
+            _isDefenderDisabled = GetDefenderState();
             OnPropertyChanged(nameof(IsDefenderDisabled));
             LoadMsiDevicesSimple();
 
@@ -122,22 +122,6 @@ namespace WpfApp3
                 }
                 IsBusy = false;
             });
-
-            // Команды для пресетов служб
-            LiteServicesCommand = new RelayCommand(async () => await ApplyServicesPreset("lite"));
-            MediumServicesCommand = new RelayCommand(async () => await ApplyServicesPreset("medium"));
-            ExtremeServicesCommand = new RelayCommand(async () => await ApplyServicesPreset("extreme"));
-            RestoreOriginalServicesCommand = new RelayCommand(async () => await RestoreOriginalServices());
-
-            // Создаём папку для бэкапов
-            Directory.CreateDirectory(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, BackupFolder));
-
-            // Если бэкап уже существует — показываем кнопку отката сразу
-            string backupRegPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, BackupFolder, ServicesBackupReg);
-            if (File.Exists(backupRegPath))
-            {
-                ShowRestoreServicesButton = true;
-            }
 
 
 
@@ -177,7 +161,6 @@ namespace WpfApp3
         private async Task LoadMsiDevicesSimple()
         {
             IsBusy = true;
-            AddLog("Запуск поиска устройств для MSI (через PowerShell)...");
             MsiCapableDevices.Clear();
 
             try
@@ -216,7 +199,7 @@ namespace WpfApp3
 
                 if (string.IsNullOrWhiteSpace(output))
                 {
-                    AddLog("PowerShell не вернул данных. Запусти программу от имени администратора!");
+                    // Тихая ошибка, без лога при запуске
                     return;
                 }
 
@@ -224,7 +207,6 @@ namespace WpfApp3
                 using var doc = JsonDocument.Parse(output);
                 var results = doc.RootElement.EnumerateArray();
 
-                int count = 0;
                 foreach (var element in results)
                 {
                     string name = element.GetProperty("Name").GetString() ?? "Без имени";
@@ -237,7 +219,7 @@ namespace WpfApp3
                         msiSupported = msiProp.GetInt32();
                     }
 
-                    // Показываем только видеокарты и аудиовыходы (динамики)
+                    // Показываем только видеокарты и аудиовыходы (динамики), исключая встроенное аудио Intel
                     bool isGpu = string.Equals(cls, "Display", StringComparison.OrdinalIgnoreCase);
                     bool isAudioClass = string.Equals(cls, "Media", StringComparison.OrdinalIgnoreCase) || string.Equals(cls, "Sound", StringComparison.OrdinalIgnoreCase);
 
@@ -264,20 +246,16 @@ namespace WpfApp3
                         DeviceId = id,
                         FriendlyName = friendly,
                         IsRecommended = recommended,
-                        SupportsMsi = msiSupported.HasValue,
-                        MsiCurrentlyEnabled = msiSupported == 1
+                        SupportsMsi = true, // Предполагаем поддержку MSI для всех PCI устройств (видеокарты и аудио)
+                        MsiCurrentlyEnabled = msiSupported == 1 // Правильное чтение текущего состояния из реестра
                     };
 
                     Dispatcher.Invoke(() => MsiCapableDevices.Add(msiItem));
-                    count++;
                 }
-
-                AddLog($"Найдено {count} устройств (видеокарты + звук)");
             }
             catch (Exception ex)
             {
-                AddLog($"Ошибка загрузки MSI-устройств: {ex.Message}");
-                AddLog("Убедись, что программа запущена от имени администратора!");
+                // Тихая ошибка при запуске
             }
             finally
             {
@@ -289,12 +267,6 @@ namespace WpfApp3
         {
             if (sender is not CheckBox cb || cb.DataContext is not MsiDeviceItem item)
                 return;
-
-            if (!item.SupportsMsi)
-            {
-                AddLog($"Устройство «{item.DeviceName}» не поддерживает MSI-режим");
-                return;
-            }
 
             bool desiredState = cb.IsChecked == true;
 
@@ -335,25 +307,6 @@ namespace WpfApp3
 
 
 
-
-
-
-
-        // === Пресеты служб (и бекап служб) ===
-        private const string BackupFolder = "backups";
-        private const string ServicesBackupReg = "services_original_backup.reg";
-
-        private bool _showRestoreServicesButton;
-        public bool ShowRestoreServicesButton
-        {
-            get => _showRestoreServicesButton;
-            set { _showRestoreServicesButton = value; OnPropertyChanged(); }
-        }
-
-        public ICommand LiteServicesCommand { get; }
-        public ICommand MediumServicesCommand { get; }
-        public ICommand ExtremeServicesCommand { get; }
-        public ICommand RestoreOriginalServicesCommand { get; }
 
 
 
@@ -438,7 +391,6 @@ namespace WpfApp3
                 {
                     _selectedPowerPlan = activePlan;
                     OnPropertyChanged(nameof(SelectedPowerPlan));
-                    AddLog($"Активная схема: {activePlan.Name}");
                 }
             }
             catch (Exception ex) { AddLog($"Ошибка чтения планов: {ex.Message}"); }
@@ -604,95 +556,147 @@ namespace WpfApp3
             }
         }
 
+        private bool _isDefenderDisabled;
+
+        private bool GetDefenderState()
+        {
+            // Улучшенная проверка состояния Windows Defender
+            // 1. Проверяем политики отключения
+            if (GetRegistryInt(@"SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiSpyware", 0, RegRoot.HKLM) == 1 ||
+                GetRegistryInt(@"SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiVirus", 0, RegRoot.HKLM) == 1)
+                return true;
+
+            // 2. Проверяем тип запуска службы WinDefend
+            int winDefendStart = GetRegistryInt(@"SYSTEM\CurrentControlSet\Services\WinDefend", "Start", 2, RegRoot.HKLM);
+            if (winDefendStart == 4) // disabled
+                return true;
+
+            // 3. Проверяем дополнительные службы
+            int securityCenterStart = GetRegistryInt(@"SYSTEM\CurrentControlSet\Services\SecurityHealthService", "Start", 2, RegRoot.HKLM);
+            if (securityCenterStart == 4) // disabled
+                return true;
+
+            // 4. Проверяем настройки реального времени
+            if (GetRegistryInt(@"SOFTWARE\Microsoft\Windows Defender\Real-Time Protection", "DisableRealtimeMonitoring", 0, RegRoot.HKLM) == 1)
+                return true;
+
+            // Если ни одна проверка не подтвердила отключение, считаем включенным
+            return false;
+        }
+
         // Полное отключение Windows Defender + скрытие в Параметрах
         public bool IsDefenderDisabled
         {
-            get
-            {
-                // Проверяем реестр для определения состояния
-                if (GetRegistryInt(@"SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiSpyware", 0, RegRoot.HKLM) == 1)
-                    return true;
-
-                int startType = GetRegistryInt(@"SYSTEM\CurrentControlSet\Services\WinDefend", "Start", 2, RegRoot.HKLM);
-                return startType == 4; // disabled
-            }
-
+            get => _isDefenderDisabled;
             set
             {
-                Task.Run(() =>
+                _isDefenderDisabled = value;
+                OnPropertyChanged();
+                Task.Run(async () =>
                 {
                     IsBusy = true;
                     AddLog("Применение настроек Windows Defender...");
 
                     if (value) // === ОТКЛЮЧАЕМ Defender ===
                     {
-                        AddLog("Полное отключение Windows Defender...");
+                        AddLog("Полное отключение Windows Defender (усиленный метод)...");
 
-                        // Основная политика отключения
+                        // 1. Отключаем через PowerShell (Set-MpPreference)
+                        // Это помогает, если политики игнорируются, но служба еще работает
+                        RunSystemCommand("powershell.exe", "Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true -DisableBlockAtFirstSeen $true -DisableIOAVProtection $true -DisablePrivacyMode $true -SignatureUpdateInterval 0 -SubmitSamplesConsent 2 -MAPSReporting 0 -HighThreatDefaultAction 6 -ModerateThreatDefaultAction 6 -LowThreatDefaultAction 6 -SevereThreatDefaultAction 6", true);
+
+                        // 2. Основные политики (GPO)
                         SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiSpyware", 1, RegRoot.HKLM);
+                        SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender", "DisableAntiVirus", 1, RegRoot.HKLM);
                         SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender", "ServiceKeepAlive", 0, RegRoot.HKLM);
 
-                        // Отключаем все компоненты реального времени
-                        SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableBehaviorMonitoring", 1, RegRoot.HKLM);
-                        SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableOnAccessProtection", 1, RegRoot.HKLM);
-                        SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableScanOnRealtimeEnable", 1, RegRoot.HKLM);
-                        SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", "DisableIOAVProtection", 1, RegRoot.HKLM);
+                        // 3. Real-Time Protection (Расширенный список)
+                        string rtpKey = @"SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection";
+                        SetRegistry(rtpKey, "DisableBehaviorMonitoring", 1, RegRoot.HKLM);
+                        SetRegistry(rtpKey, "DisableOnAccessProtection", 1, RegRoot.HKLM);
+                        SetRegistry(rtpKey, "DisableScanOnRealtimeEnable", 1, RegRoot.HKLM);
+                        SetRegistry(rtpKey, "DisableIOAVProtection", 1, RegRoot.HKLM);
+                        SetRegistry(rtpKey, "DisableRealtimeMonitoring", 1, RegRoot.HKLM); // Критически важно для предотвращения включения
 
-                        // Tamper Protection и UI
-                        SetRegistry(@"SOFTWARE\Microsoft\Windows Defender\Features", "TamperProtection", 0, RegRoot.HKLM);
+                        // 4. Spynet (Cloud)
+                        string spyKey = @"SOFTWARE\Policies\Microsoft\Windows Defender\Spynet";
+                        SetRegistry(spyKey, "SpyNetReporting", 0, RegRoot.HKLM);
+                        SetRegistry(spyKey, "SubmitSamplesConsent", 2, RegRoot.HKLM);
+
+                        // 5. Tamper Protection и UI
+                        RunSystemCommand("reg", "add \"HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Features\" /v TamperProtection /t REG_DWORD /d 0 /f", true);
                         SetRegistry(@"SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Systray", "HideSystray", 1, RegRoot.HKLM);
 
-                        // Отключаем службу
-                        RunSystemCommand("sc", "config WinDefend start= disabled", true);
-                        RunSystemCommand("sc", "stop WinDefend", true);
+                        // 6. Отключаем службы (WinDefend, WdNisSvc, Sense, SecurityHealthService, WdFilter)
+                        // SecurityHealthService часто отвечает за восстановление защиты
+                        string[] services = { "WinDefend", "WdNisSvc", "Sense", "SecurityHealthService", "WdFilter" };
+                        foreach (var svc in services)
+                        {
+                            RunSystemCommand("sc", $"config \"{svc}\" start= disabled", true);
+                            RunSystemCommand("sc", $"stop \"{svc}\"", true);
+                        }
 
-                        AddLog("Windows Defender полностью отключён.");
+                        AddLog("Windows Defender полностью отключён (Registry + PowerShell + Services).");
                     }
-                    else // === ВКЛЮЧАЕМ Defender (главное исправление здесь) ===
+                    else // === ВКЛЮЧАЕМ Defender ===
                     {
                         AddLog("Включение Windows Defender...");
 
-                        // ШАГ 1: САМОЕ ВАЖНОЕ — сначала снимаем главную блокирующую политику!
+                        // ШАГ 1: Снимаем блокирующие политики
                         try
                         {
                             using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows Defender", true))
                             {
                                 key?.DeleteValue("DisableAntiSpyware", false);
+                                key?.DeleteValue("DisableAntiVirus", false);
                             }
-                        }
-                        catch (Exception ex) { AddLog("Не удалось удалить DisableAntiSpyware: " + ex.Message); }
-
-                        // ШАГ 2: Включаем автозапуск службы
-                        RunSystemCommand("sc", "config WinDefend start= auto", true);
-
-                        // ШАГ 3: Запускаем службу (если не запустится сразу — после перезагрузки точно)
-                        string startResult = RunCommandSync("net", "start WinDefend");
-                        if (startResult.Contains("успешно") || startResult.Contains("already"))
-                            AddLog("Служба WinDefend запущена.");
-                        else
-                            AddLog("Служба не запустилась сразу (запустится после перезагрузки): " + startResult);
-
-                        // ШАГ 4: Очищаем остальные политики (теперь это возможно, т.к. основная снята)
-                        try
-                        {
                             Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection", false);
+                            Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Policies\Microsoft\Windows Defender\Spynet", false);
                             Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\Policies\Microsoft\Windows Defender Security Center", false);
+
                             using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows Defender\Features", true))
                             {
                                 key?.DeleteValue("TamperProtection", false);
                             }
                         }
-                        catch (Exception ex) { AddLog("Дополнительная очистка реестра: " + ex.Message); }
+                        catch { } // Игнорируем ошибки реестра
+
+                        // ШАГ 2: Включаем службы обратно
+                        string[] services = { "WinDefend", "WdNisSvc", "SecurityHealthService", "Sense" };
+                        foreach (var svc in services)
+                        {
+                            RunSystemCommand("sc", $"config \"{svc}\" start= auto", true);
+                        }
+
+                        // ШАГ 3: Возвращаем настройки PowerShell
+                        RunSystemCommand("powershell.exe", "Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false", true);
+
+                        // ШАГ 4: Запускаем основную службу
+                        string startResult = RunCommandSync("net", "start WinDefend");
+                        if (startResult.Contains("успешно") || startResult.Contains("already"))
+                            AddLog("Служба WinDefend запущена.");
+                        // else: Служба запустится после перезагрузки (без лога)
 
                         AddLog("Windows Defender включён. Полное восстановление — после перезагрузки.");
+
+                        // Удаляем задачу планировщика для отключения Defender
+                        string result = RunCommandSync("schtasks", "/delete /tn \"\\DisableWindowsDefender\" /f");
+                        if (result.Contains("Успех") || result.Contains("SUCCESS") || result.Contains("не существует") || string.IsNullOrWhiteSpace(result))
+                        {
+                            AddLog("✓ Задача планировщика для отключения Defender удалена.");
+                        }
+                        // else: Не выводим ошибки удаления задачи
                     }
 
                     AddLog("⚠️ Рекомендуется перезагрузка для полного применения изменений!");
 
-                    // Обновляем UI — теперь геттер должен увидеть правильное состояние
+                    // Ждём применения изменений
+                    await Task.Delay(2000);
+
+                    // Обновляем UI для других элементов
                     Dispatcher.Invoke(() =>
                     {
-                        OnPropertyChanged(nameof(IsDefenderDisabled));
+                        RefreshAllUIStates();
                     });
 
                     IsBusy = false;
@@ -884,7 +888,8 @@ namespace WpfApp3
             }
             catch (Exception ex)
             {
-                System.Windows.MessageBox.Show($"Ошибка при выполнении команды: {ex.Message}");
+                if (!ex.Message.Contains("cannot find"))
+                    System.Windows.MessageBox.Show($"Ошибка при выполнении команды: {ex.Message}");
             }
         }
 
@@ -1162,308 +1167,6 @@ namespace WpfApp3
             IsBusy = false;
         }
 
-        // ==========================
-        // 6. ЭКСПЕРИМЕНТАЛЬНЫЕ ТВИКИ (ОПТИМИЗАЦИЯ СЛУЖБ)
-        // ==========================
-
-        private async Task ApplyServicesPreset(string preset)
-        {
-            if (IsBusy) return;
-            IsBusy = true;
-
-            string title = preset switch
-            {
-                "lite" => "Лёгкая оптимизация служб",
-                "medium" => "Средняя оптимизация (рекомендуется для игр)",
-                "extreme" => "Экстремальная оптимизация (только игры)",
-                _ => ""
-            };
-
-            var confirm = MessageBox.Show(
-                $"{title}\n\nЭто изменит режим запуска множества служб.\nРекомендуется перезагрузка после применения.\n\nПродолжить?",
-                "Оптимизация служб", MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-            if (confirm != MessageBoxResult.Yes)
-            {
-                IsBusy = false;
-                return;
-            }
-
-            AddLog($"Применяется пресет: {title}...");
-
-            string backupPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, BackupFolder);
-            string regPath = Path.Combine(backupPath, ServicesBackupReg);
-
-            // Создаём бэкап только при первом применении любого пресета (кроме отката)
-            bool needBackup = preset != "restore" && !File.Exists(regPath);
-            if (needBackup)
-            {
-                AddLog("Создаётся резервная копия исходных настроек служб (первый запуск)...");
-                await Task.Run(() =>
-                {
-                    RunSystemCommand("reg", $"export \"HKLM\\SYSTEM\\CurrentControlSet\\Services\" \"{regPath}\" /y", true);
-                });
-                AddLog("Резервная копия создана в папке 'backups'.");
-                ShowRestoreServicesButton = true;
-            }
-
-            // Список служб и их целевые режимы
-            var services = new Dictionary<string, string>
-    {
-        {"SysMain", "disabled"}, {"DiagTrack", "disabled"}, {"WSearch", "disabled"}, {"DoSvc", "disabled"},
-        {"MapsBroker", "disabled"}, {"lfsvc", "disabled"}, {"Fax", "disabled"}, {"WerSvc", "disabled"},
-        {"RetailDemo", "disabled"}, {"WalletService", "disabled"}, {"WbioSrvc", "disabled"},
-        {"RemoteRegistry", "disabled"}, {"dmwappushservice", "disabled"}, {"PhoneSvc", "disabled"},
-        {"icssvc", "disabled"}, {"WpcMonSvc", "disabled"}, {"TabletInputService", "demand"},
-        {"WMPNetworkSvc", "disabled"}, {"TrkWks", "disabled"}, {"NetTcpPortSharing", "disabled"},
-        {"SharedAccess", "disabled"}, {"SSPSvc", "disabled"}, {"OneSyncSvc", "demand"},
-        {"MessagingService", "disabled"}, {"AJRouter", "disabled"}, {"CDPSvc", "demand"},
-        {"SDRSVC", "disabled"}, {"CscService", "disabled"},
-        // Xbox службы — в demand для medium/lite, disabled для extreme
-        {"XblAuthManager", "demand"}, {"XblGameSave", "demand"}, {"XboxNetApiSvc", "demand"},
-        // Печать
-        {"Spooler", "demand"},
-        // Bluetooth
-        {"BluetoothSupportService", "demand"}, {"BthAvctpSvc", "demand"}
-    };
-
-            await Task.Run(() =>
-            {
-                foreach (var svc in services.Keys)
-                {
-                    string targetType = "demand"; // по умолчанию
-
-                    if (preset == "lite")
-                    {
-                        // Только самые безопасные
-                        targetType = new[] { "SysMain", "DiagTrack", "WSearch", "DoSvc", "MapsBroker", "lfsvc", "Fax", "RetailDemo" }.Contains(svc)
-                            ? "disabled" : "demand";
-                    }
-                    else if (preset == "medium")
-                    {
-                        // Рекомендуемый геймерский
-                        targetType = new[] { "SysMain", "DiagTrack", "WSearch", "DoSvc", "MapsBroker", "lfsvc", "Fax", "WerSvc",
-                    "RetailDemo", "WalletService", "RemoteRegistry", "dmwappushservice" }.Contains(svc)
-                            ? "disabled" : "demand";
-                    }
-                    else if (preset == "extreme")
-                    {
-                        targetType = "disabled";
-                    }
-
-                    RunSystemCommand("sc", $"config \"{svc}\" start= {targetType}", true);
-                    if (targetType == "disabled" || targetType == "demand")
-                        RunSystemCommand("sc", $"stop \"{svc}\"", true);
-                }
-            });
-
-            AddLog($"Пресет '{title}' применён успешно.");
-            MessageBox.Show($"{title} применён.\n\nПерезагрузите компьютер для полного эффекта.", "Готово", MessageBoxButton.OK, MessageBoxImage.Information);
-            IsBusy = false;
-        }
-
-        private async Task RestoreOriginalServices()
-        {
-            if (IsBusy) return;
-
-            var confirm = MessageBox.Show(
-                "Восстановить ИСХОДНЫЕ настройки служб из резервной копии?\nЭто отменит все применённые пресеты оптимизации.\nОбязательна перезагрузка!",
-                "Откат служб", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-
-            if (confirm != MessageBoxResult.Yes) return;
-
-            IsBusy = true;
-            AddLog("Восстановление исходных настроек служб из бэкапа...");
-
-            string regPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, BackupFolder, ServicesBackupReg);
-
-            await Task.Run(() =>
-            {
-                if (File.Exists(regPath))
-                {
-                    RunSystemCommand("reg", $"import \"{regPath}\"", true);
-                }
-                else
-                {
-                    AddLog("Ошибка: файл резервной копии не найден!");
-                }
-            });
-
-            AddLog("Исходные настройки служб восстановлены. Перезагрузите ПК!");
-            MessageBox.Show("Откат завершён.\nОБЯЗАТЕЛЬНО перезагрузите компьютер.", "Готово", MessageBoxButton.OK, MessageBoxImage.Information);
-            IsBusy = false;
-        }
-
-        public class ServiceItem : INotifyPropertyChanged
-        {
-            public string ServiceName { get; set; } = string.Empty;
-            public string DisplayName { get; set; } = string.Empty;
-            public string Description { get; set; } = string.Empty;
-            public string Recommendation { get; set; } = string.Empty;
-
-            public enum StartupType
-            {
-                Automatic,
-                AutomaticDelayed,
-                Manual,
-                Disabled
-            }
-
-            private StartupType _currentType;
-            public StartupType CurrentType
-            {
-                get => _currentType;
-                set
-                {
-                    if (_currentType != value)
-                    {
-                        _currentType = value;
-                        OnPropertyChanged();
-                    }
-                }
-            }
-
-            public event PropertyChangedEventHandler? PropertyChanged;
-            protected void OnPropertyChanged([CallerMemberName] string? name = null) =>
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-        }
-
-        public ObservableCollection<ServiceItem> ServicesList { get; set; } = new ObservableCollection<ServiceItem>();
-
-        private async void LoadServicesList()
-        {
-            await Task.Run(() =>
-            {
-                var services = new List<ServiceItem>
-        {
-            new ServiceItem { ServiceName = "SysMain", DisplayName = "SysMain (Superfetch/Prefetch)", Description = "Предзагрузка часто используемых программ в ОЗУ", Recommendation = "Безопасно отключать на SSD — экономит RAM" },
-            new ServiceItem { ServiceName = "DiagTrack", DisplayName = "Connected User Experiences and Telemetry", Description = "Сбор телеметрии и диагностики Microsoft", Recommendation = "Безопасно отключать — приватность + производительность" },
-            new ServiceItem { ServiceName = "WSearch", DisplayName = "Windows Search (Индексация)", Description = "Индексация файлов для быстрого поиска", Recommendation = "Отключать, если не пользуетесь поиском по содержимому файлов" },
-            new ServiceItem { ServiceName = "DoSvc", DisplayName = "Delivery Optimization", Description = "P2P-доставка обновлений (экономит трафик MS)", Recommendation = "Отключать для экономии трафика и CPU" },
-            new ServiceItem { ServiceName = "Spooler", DisplayName = "Print Spooler", Description = "Очередь печати", Recommendation = "Отключать, если нет принтера" },
-            new ServiceItem { ServiceName = "BluetoothSupportService", DisplayName = "Bluetooth Support Service", Description = "Поддержка Bluetooth-устройств", Recommendation = "Отключать без Bluetooth" },
-            new ServiceItem { ServiceName = "WlanSvc", DisplayName = "WLAN AutoConfig", Description = "Управление Wi-Fi", Recommendation = "НЕ отключать при использовании Wi-Fi!" },
-            new ServiceItem { ServiceName = "Fax", DisplayName = "Fax", Description = "Поддержка факсов", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "WerSvc", DisplayName = "Windows Error Reporting", Description = "Отправка отчётов об ошибках в MS", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "MapsBroker", DisplayName = "Downloaded Maps Manager", Description = "Управление оффлайн-картами", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "lfsvc", DisplayName = "Geolocation Service", Description = "Определение местоположения", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "XblAuthManager", DisplayName = "Xbox Live Auth Manager", Description = "Аутентификация Xbox", Recommendation = "Отключать без Xbox-игр" },
-            new ServiceItem { ServiceName = "XblGameSave", DisplayName = "Xbox Live Game Save", Description = "Сохранения Xbox", Recommendation = "Отключать без Xbox" },
-            new ServiceItem { ServiceName = "XboxNetApiSvc", DisplayName = "Xbox Live Networking Service", Description = "Сетевая поддержка Xbox", Recommendation = "Отключать без Xbox" },
-            new ServiceItem { ServiceName = "RemoteRegistry", DisplayName = "Remote Registry", Description = "Удалённый доступ к реестру", Recommendation = "Отключать — безопасность" },
-            new ServiceItem { ServiceName = "WalletService", DisplayName = "Wallet Service", Description = "Microsoft Wallet / платежи", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "PhoneSvc", DisplayName = "Phone Service", Description = "Связь с телефоном (Your Phone)", Recommendation = "Отключать без функции 'Телефон'" },
-            new ServiceItem { ServiceName = "icssvc", DisplayName = "Mobile Hotspot Service", Description = "Раздача интернета (хотспот)", Recommendation = "Отключать, если не используете" },
-            new ServiceItem { ServiceName = "RetailDemo", DisplayName = "Retail Demo Service", Description = "Демо-режим для магазинов", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "WpcMonSvc", DisplayName = "Parental Controls", Description = "Родительский контроль", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "TabletInputService", DisplayName = "Touch Keyboard and Handwriting Panel", Description = "Сенсорная клавиатура и рукописный ввод", Recommendation = "Отключать на десктопе без тачскрина" },
-            new ServiceItem { ServiceName = "WMPNetworkSvc", DisplayName = "Windows Media Player Network Sharing", Description = "Общий доступ к медиа через WMP", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "TrkWks", DisplayName = "Distributed Link Tracking Client", Description = "Отслеживание ссылок на сетевых дисках", Recommendation = "Безопасно отключать на домашнем ПК" },
-            new ServiceItem { ServiceName = "dmwappushservice", DisplayName = "Device Management WAP Push", Description = "Push-уведомления телеметрии", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "iphlpsvc", DisplayName = "IP Helper", Description = "Поддержка IPv6", Recommendation = "Отключать, если не нужен IPv6" },
-            new ServiceItem { ServiceName = "NetTcpPortSharing", DisplayName = "Net.Tcp Port Sharing Service", Description = "Общий доступ к портам TCP", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "SharedAccess", DisplayName = "Internet Connection Sharing (ICS)", Description = "Общий доступ к интернету", Recommendation = "Отключать, если не используете" },
-            new ServiceItem { ServiceName = "SSPSvc", DisplayName = "Smart Card", Description = "Поддержка смарт-карт", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "Wecsvc", DisplayName = "Windows Event Collector", Description = "Сбор событий с других ПК", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "wisvc", DisplayName = "Windows Insider Service", Description = "Программа Insider", Recommendation = "Отключать, если не в Insider" },
-            new ServiceItem { ServiceName = "OneSyncSvc", DisplayName = "Sync Host", Description = "Синхронизация Mail, Contacts и т.д.", Recommendation = "Отключать без синхронизации аккаунта MS" },
-            new ServiceItem { ServiceName = "MessagingService", DisplayName = "Messaging Service", Description = "Сообщения и чат", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "AJRouter", DisplayName = "AllJoyn Router Service", Description = "Поддержка IoT-устройств", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "BthAvctpSvc", DisplayName = "AVCTP Service", Description = "Bluetooth Audio Gateway", Recommendation = "Отключать без Bluetooth-аудио" },
-            new ServiceItem { ServiceName = "CDPSvc", DisplayName = "Connected Devices Platform Service", Description = "Подключение устройств (Miracast и т.д.)", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "DPS", DisplayName = "Diagnostic Policy Service", Description = "Диагностика системы", Recommendation = "Можно отключать" },
-            new ServiceItem { ServiceName = "PcaSvc", DisplayName = "Program Compatibility Assistant", Description = "Совместимость старых программ", Recommendation = "Можно отключать" },
-            new ServiceItem { ServiceName = "SDRSVC", DisplayName = "Windows Backup", Description = "Резервное копирование", Recommendation = "Отключать без использования" },
-            new ServiceItem { ServiceName = "WinHttpAutoProxySvc", DisplayName = "WinHTTP Web Proxy Auto-Discovery", Description = "Автообнаружение прокси", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "CscService", DisplayName = "Offline Files", Description = "Автономные файлы (синхронизация)", Recommendation = "Можно отключать" },
-            new ServiceItem { ServiceName = "WbioSrvc", DisplayName = "Windows Biometric Service", Description = "Windows Hello / биометрия", Recommendation = "Отключать без отпечатков/лица" },
-            new ServiceItem { ServiceName = "Sense", DisplayName = "System Event Notification Service", Description = "Отслеживание системных событий", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "wcncsvc", DisplayName = "Windows Connect Now - Config Registrar", Description = "Подключение новых Wi-Fi сетей", Recommendation = "Отключать осторожно — может сломать добавление Wi-Fi" },
-            new ServiceItem { ServiceName = "Wcmsvc", DisplayName = "Windows Connection Manager", Description = "Управление сетевыми подключениями", Recommendation = "НЕ отключать!" },
-            new ServiceItem { ServiceName = "WdNisSvc", DisplayName = "Windows Defender Network Inspection", Description = "Сетевой защита Defender", Recommendation = "Отключать только с другим антивирусом" },
-            new ServiceItem { ServiceName = "SecurityHealthService", DisplayName = "Windows Security Service", Description = "Интерфейс безопасности Windows", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "HvHostService", DisplayName = "HV Host Service", Description = "Hyper-V хост", Recommendation = "Отключать без виртуализации" },
-            new ServiceItem { ServiceName = "vmickvpexchange", DisplayName = "Hyper-V Guest Service Interface", Description = "Интеграция с Hyper-V", Recommendation = "Отключать без VM" },
-            new ServiceItem { ServiceName = "vmicshutdown", DisplayName = "Hyper-V Guest Shutdown", Description = "Выключение гостевой VM", Recommendation = "Отключать без VM" },
-            new ServiceItem { ServiceName = "vmcompute", DisplayName = "Hyper-V Host Compute Service", Description = "Вычисления Hyper-V", Recommendation = "Отключать без виртуализации" },
-            new ServiceItem { ServiceName = "EntAppSvc", DisplayName = "Enterprise App Management Service", Description = "Управление корпоративными приложениями", Recommendation = "Безопасно отключать на домашнем ПК" },
-            new ServiceItem { ServiceName = "ClipSVC", DisplayName = "Client License Service (ClipSVC)", Description = "Лицензирование Microsoft Store", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "LicenseManager", DisplayName = "Windows License Manager Service", Description = "Управление лицензиями", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "Appinfo", DisplayName = "Application Information", Description = "Запуск приложений от админа", Recommendation = "Оставить Auto" },
-            new ServiceItem { ServiceName = "StiSvc", DisplayName = "Windows Image Acquisition (WIA)", Description = "Работа со сканерами и камерами", Recommendation = "Отключать без сканера" },
-            new ServiceItem { ServiceName = "Fax", DisplayName = "Fax", Description = "Факс", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "SENS", DisplayName = "System Event Notification Service", Description = "Уведомления о системных событиях", Recommendation = "Можно в Manual" },
-            new ServiceItem { ServiceName = "ScDeviceEnum", DisplayName = "Smart Card Device Enumeration", Description = "Перечисление смарт-карт", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "SCPolicysvc", DisplayName = "Smart Card Removal Policy", Description = "Политика удаления смарт-карт", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "SNMPTRAP", DisplayName = "SNMP Trap", Description = "Ловушки SNMP", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "FaxService", DisplayName = "Fax Service", Description = "Факс", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "HomeGroupListener", DisplayName = "HomeGroup Listener", Description = "Домашняя группа (устарело)", Recommendation = "Безопасно отключать" },
-            new ServiceItem { ServiceName = "HomeGroupProvider", DisplayName = "HomeGroup Provider", Description = "Домашняя группа (устарело)", Recommendation = "Безопасно отключать" }
-            // Можно добавить ещё, если найдёшь актуальные
-        };
-
-                foreach (var svc in services)
-                {
-                    string output = RunCommandSync("sc", $"qc \"{svc.ServiceName}\"");
-                    if (string.IsNullOrWhiteSpace(output) || output.Contains("FAILED") || output.Contains("не существует"))
-                    {
-                        svc.CurrentType = ServiceItem.StartupType.Disabled;
-                        continue;
-                    }
-
-                    if (output.Contains("AUTO_START") && output.Contains("DELAYED"))
-                        svc.CurrentType = ServiceItem.StartupType.AutomaticDelayed;
-                    else if (output.Contains("AUTO_START"))
-                        svc.CurrentType = ServiceItem.StartupType.Automatic;
-                    else if (output.Contains("DEMAND_START"))
-                        svc.CurrentType = ServiceItem.StartupType.Manual;
-                    else if (output.Contains("DISABLED"))
-                        svc.CurrentType = ServiceItem.StartupType.Disabled;
-                    else
-                        svc.CurrentType = ServiceItem.StartupType.Manual;
-                }
-
-                Dispatcher.Invoke(() =>
-                {
-                    ServicesList.Clear();
-                    foreach (var s in services.OrderBy(x => x.DisplayName))
-                        ServicesList.Add(s);
-                });
-
-                AddLog("Загружен расширенный список служб (60+ оптимизированных для гейминга).");
-            });
-        }
-
-        private async void ServiceStartupType_Changed(object sender, RoutedEventArgs e)
-        {
-            if (sender is RadioButton rb && rb.IsChecked == true && rb.Tag is ServiceItem item)
-            {
-                IsBusy = true;
-                AddLog($"Изменение службы: {item.DisplayName} → {item.CurrentType}");
-
-                string type = item.CurrentType switch
-                {
-                    ServiceItem.StartupType.Automatic => "auto",
-                    ServiceItem.StartupType.AutomaticDelayed => "delayed-auto",
-                    ServiceItem.StartupType.Manual => "demand",
-                    ServiceItem.StartupType.Disabled => "disabled",
-                    _ => "demand"
-                };
-
-                await Task.Run(() =>
-                {
-                    RunSystemCommand("sc", $"config \"{item.ServiceName}\" start= {type}", true);
-                    if (item.CurrentType == ServiceItem.StartupType.Disabled || item.CurrentType == ServiceItem.StartupType.Manual)
-                        RunSystemCommand("sc", $"stop \"{item.ServiceName}\"", true);
-                });
-
-                AddLog($"Служба '{item.DisplayName}' обновлена: {item.CurrentType}");
-                IsBusy = false;
-            }
-        }
-
-
-
 
         private string RunCommandSync(string cmd, string args)
         {
@@ -1498,6 +1201,9 @@ namespace WpfApp3
             }
             catch (Exception ex)
             {
+                // Игнорируем ошибки "cannot find" или "Не удается найти"
+                if (ex.Message.Contains("cannot find") || ex.Message.Contains("Не удается найти"))
+                    return "";
                 return $"Исключение при выполнении команды: {ex.Message}";
             }
         }
@@ -1791,7 +1497,7 @@ namespace WpfApp3
         {
             if (!File.Exists(_wubExe))
             {
-                AddLog("ОШИБКА: Wub.exe не найден в папке с программой!");
+                AddLog("Wub.exe отсутствует рядом с исполняемым файлом основной программы.");
                 return false;
             }
 
@@ -1909,11 +1615,10 @@ namespace WpfApp3
                         if (result.Contains("Успех") || result.Contains("SUCCESS") || result.Contains("уже существует") || string.IsNullOrWhiteSpace(result))
                         {
                             AddLog("✓ Бесконечная пауза обновлений ВКЛЮЧЕНА.");
-                            AddLog("Задача успешно создана/обновлена в планировщике.");
+                            AddLog("Задача планировщика 'PauseWindowsUpdate' успешно создана/обновлена для бесконечной паузы обновлений.");
                         }
                         else
                         {
-                            AddLog("✗ Неизвестная ошибка при создании задачи:");
                             AddLog(result.Trim());
                         }
                     }
@@ -1921,15 +1626,14 @@ namespace WpfApp3
                     {
                         string result = RunCommandSync("schtasks", "/delete /tn \"\\PauseWindowsUpdate\" /f");
 
-                        if (result.Contains("Успех") || result.Contains("SUCCESS") || string.IsNullOrWhiteSpace(result))
+                        if (result.Contains("Успех") || result.Contains("SUCCESS") || result.Contains("успешно") || string.IsNullOrWhiteSpace(result))
                         {
                             AddLog("✗ Бесконечная пауза обновлений ОТКЛЮЧЕНА.");
-                            AddLog("Задача удалена из планировщика.");
+                            AddLog("Задача планировщика 'PauseWindowsUpdate' для бесконечной паузы обновлений удалена.");
                         }
                         else
                         {
-                            AddLog("✗ Ошибка удаления задачи:");
-                            AddLog(result.Trim());
+                            AddLog("Результат команды schtasks: " + result.Trim());
                         }
                     }
 
@@ -2147,7 +1851,7 @@ namespace WpfApp3
                 // Дополнительно выключаем гибернацию, если нужно
                 if (value)
                     RunSystemCommand("powercfg", "/h off");
-                AddLog($"Fast Startup: {(value ? "ОТКЛЮЧЕН" : "ВКЛЮЧЕН")} (включая гибернацию)");
+                AddLog($"Fast Startup: {(value ? "ОТКЛЮЧЕН" : "ВКЛЮЧЕН")}");
                 OnPropertyChanged();
             }
         }
@@ -2187,7 +1891,6 @@ namespace WpfApp3
                     SetRegistry(@"SOFTWARE\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications", "GlobalUserDisabled", 1, RegRoot.HKCU);
 
                     AddLog("Фоновые приложения: ОТКЛЮЧЕНЫ (для всех пользователей)");
-                    AddLog("Изменения применяются мгновенно.");
                 }
                 else // ВКЛЮЧАЕМ обратно
                 {
@@ -2206,6 +1909,15 @@ namespace WpfApp3
 
                 OnPropertyChanged();
             }
+        }
+
+        // Метод для обновления всех состояний UI после системных изменений
+        private void RefreshAllUIStates()
+        {
+            // Force refresh all bindings by resetting DataContext
+            var oldContext = DataContext;
+            DataContext = null;
+            DataContext = oldContext;
         }
         
 
@@ -2262,8 +1974,11 @@ namespace WpfApp3
                 }
                 catch (Exception ex)
                 {
-                    AddLog($"Ошибка: {ex.Message}");
-                    MessageBox.Show($"Не удалось запустить MAS: {ex.Message}\n\nПопробуйте вручную в PowerShell (от админа):\nirm https://get.activated.win | iex", "Ошибка");
+                    if (!ex.Message.Contains("cannot find") && !ex.Message.Contains("Не удается найти"))
+                    {
+                        AddLog($"Ошибка: {ex.Message}");
+                        MessageBox.Show($"Не удалось запустить MAS: {ex.Message}\n\nПопробуйте вручную в PowerShell (от админа):\nirm https://get.activated.win | iex", "Ошибка");
+                    }
                 }
             });
 
