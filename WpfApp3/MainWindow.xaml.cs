@@ -599,6 +599,63 @@ namespace WpfApp3
 
                     if (value) // === ОТКЛЮЧАЕМ Defender ===
                     {
+                        // Проверяем Tamper Protection
+                        if (CheckTamperProtection())
+                        {
+                            AddLog("Обнаружена включённая Tamper Protection. Открываем Windows Defender для ручного отключения...");
+
+                            // Открываем Windows Defender
+                            OpenWindowsDefender();
+
+                            // Цикл пока Tamper Protection включена
+                            while (CheckTamperProtection())
+                            {
+                                // Показываем инструкцию
+                                var result = MessageBox.Show(
+                                    "Защита от подделки (Tamper Protection) включена!\n\n" +
+                                    "Для отключения Windows Defender необходимо сначала отключить защиту от подделки (Tamper Protection) вручную:\n\n" +
+                                    "1. В открывшемся окне Windows Security перейдите в 'Защита от вирусов и угроз'\n" +
+                                    "2. Нажмите 'Управление настройками'\n" +
+                                    "3. Отключите 'Защита от подделки'\n" +
+                                    "4. Подтвердите отключение\n\n" +
+                                    "После отключения защиты от подделки (Tamper Protection) нажмите OK для продолжения.",
+                                    "Требуется ручное действие",
+                                    MessageBoxButton.OKCancel,
+                                    MessageBoxImage.Warning);
+
+                                if (result == MessageBoxResult.Cancel)
+                                {
+                                    AddLog("Пользователь отменил отключение Defender.");
+                                    Dispatcher.Invoke(() => { _isDefenderDisabled = false; OnPropertyChanged(); });
+                                    IsBusy = false;
+                                    return;
+                                }
+
+                                // Если OK, но Tamper Protection еще включена, цикл повторится
+                                // Добавим небольшую паузу, чтобы не спамить
+                                await Task.Delay(300);
+                            }
+
+                            AddLog("Tamper Protection отключена.");
+
+                            // Теперь показываем финальное подтверждение
+                            var finalConfirm = MessageBox.Show(
+                                "Tamper Protection отключена.\n\n" +
+                                "Теперь можно продолжить отключение Windows Defender.\n\n" +
+                                "Подтвердить отключение защитника?",
+                                "Подтверждение отключения",
+                                MessageBoxButton.YesNo,
+                                MessageBoxImage.Question);
+
+                            if (finalConfirm != MessageBoxResult.Yes)
+                            {
+                                AddLog("Пользователь отменил финальное отключение Defender.");
+                                Dispatcher.Invoke(() => { _isDefenderDisabled = false; OnPropertyChanged(); });
+                                IsBusy = false;
+                                return;
+                            }
+                        }
+
                         AddLog("Полное отключение Windows Defender (усиленный метод)...");
 
                         // 1. Отключаем через PowerShell (Set-MpPreference)
@@ -702,6 +759,73 @@ namespace WpfApp3
                     IsBusy = false;
                 });
             }
+        }
+
+        // === ПРОВЕРКА И УПРАВЛЕНИЕ TAMPER PROTECTION ===
+        private bool CheckTamperProtection()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"(Get-MpComputerStatus).IsTamperProtected\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.GetEncoding(866),
+                    StandardErrorEncoding = Encoding.GetEncoding(866)
+                };
+
+                using var process = Process.Start(psi);
+                string output = process.StandardOutput.ReadToEnd().Trim();
+                process.WaitForExit();
+
+                return output == "True";
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void OpenWindowsDefender()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "windowsdefender:",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                // Альтернативный способ
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "ms-settings:windowsdefender",
+                        UseShellExecute = true
+                    });
+                }
+                catch
+                {
+                    AddLog("Не удалось открыть Windows Defender.");
+                }
+            }
+        }
+
+        private async Task WaitForTamperProtectionDisabled()
+        {
+            AddLog("Ожидание отключения Tamper Protection...");
+            while (CheckTamperProtection())
+            {
+                await Task.Delay(2000); // Проверяем каждые 2 секунды
+            }
+            AddLog("Tamper Protection отключена.");
         }
 
         // === ВКЛЮЧЕНИЕ INTEL TSX (Transactional Synchronization Extensions) ===
