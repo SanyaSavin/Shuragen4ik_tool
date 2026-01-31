@@ -199,7 +199,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
 
                     <Border Background="#222" CornerRadius="4" Padding="8,4" VerticalAlignment="Center" Margin="0,0,20,0">
-                        <TextBlock Text="v1.3" Foreground="#B388FF" FontSize="10" FontWeight="Bold"/>
+                        <TextBlock Text="v1.3.1" Foreground="#B388FF" FontSize="10" FontWeight="Bold"/>
                     </Border>
 
                     <Border Background="#252525" CornerRadius="20" Padding="5,5,15,5" BorderBrush="#333" BorderThickness="1">

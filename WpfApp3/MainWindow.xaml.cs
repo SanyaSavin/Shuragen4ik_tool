@@ -83,7 +83,7 @@ namespace WpfApp3
                 MessageBox.Show("ОШИБКА: Запущена 32-битная версия.\nСкомпилируйте проект под x64!", "Архитектура", MessageBoxButton.OK, MessageBoxImage.Error);
 
             AddLog($"Добро пожаловать, {CurrentUserName}!");
-            AddLog("Shuragen4ik Tool v1.3 готов к работе.");
+            AddLog("Shuragen4ik Tool v1.3.1 готов к работе.");
 
             LoadWallpapers();
             LoadPowerPlans();
@@ -2076,35 +2076,89 @@ namespace WpfApp3
             AddLog("Запуск Microsoft Activation Scripts (MAS)...");
             AddLog("Инструкция: " + instruction);
 
+            // Список альтернативных URL для обхода блокировок
+            string[] masUrls = new[]
+            {
+                "https://get.activated.win",
+                "https://massgrave.dev/脚本",
+                "https://raw.githubusercontent.com/massgravel/Microsoft-Activation-Scripts/master/MAS/All-In-One-Version/MAS_AIO.cmd"
+            };
+
+            bool success = false;
+            Exception? lastError = null;
+
             await Task.Run(() =>
             {
-                try
+                foreach (string url in masUrls)
                 {
-                    var psi = new ProcessStartInfo
+                    try
                     {
-                        FileName = "powershell.exe",
-                        Arguments = "-ExecutionPolicy Bypass -Command \"irm https://get.activated.win | iex\"",
-                        UseShellExecute = true,
-                        Verb = "runas", // На всякий случай UAC
-                        WindowStyle = ProcessWindowStyle.Normal // Окно видно, но меню MAS внутри него
-                    };
+                        AddLog($"Попытка загрузки с: {url}");
 
-                    using (var process = Process.Start(psi))
-                    {
-                        process?.WaitForExit();
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = "powershell.exe",
+                            Arguments = $"-ExecutionPolicy Bypass -Command \"irm {url} -TimeoutSec 30 | iex\"",
+                            UseShellExecute = true,
+                            Verb = "runas",
+                            WindowStyle = ProcessWindowStyle.Normal
+                        };
+
+                        using var process = Process.Start(psi);
+                        // Таймаут 3 минуты на запуск MAS
+                        bool finished = process!.WaitForExit(180000);
+                        
+                        if (finished)
+                        {
+                            success = true;
+                            AddLog("MAS успешно загружен и запущен.");
+                            break;
+                        }
+                        else
+                        {
+                            process.Kill();
+                            AddLog("Таймаут загрузки, пробуем следующий URL...");
+                        }
                     }
-
-                    AddLog("MAS завершён. Проверьте статус в Параметры → Обновление и безопасность → Активация.");
-                }
-                catch (Exception ex)
-                {
-                    if (!ex.Message.Contains("cannot find") && !ex.Message.Contains("Не удается найти"))
+                    catch (Exception ex)
                     {
-                        AddLog($"Ошибка: {ex.Message}");
-                        MessageBox.Show($"Не удалось запустить MAS: {ex.Message}\n\nПопробуйте вручную в PowerShell (от админа):\nirm https://get.activated.win | iex", "Ошибка");
+                        lastError = ex;
+                        AddLog($"Ошибка с URL {url}: {ex.Message}");
+                        continue;
                     }
                 }
             });
+
+            if (!success)
+            {
+                AddLog("Не удалось загрузить MAS автоматически.");
+                
+                var manualResult = MessageBox.Show(
+                    $"Автоматическая загрузка не удалась.\n\n" +
+                    $"Последняя ошибка: {lastError?.Message ?? "Неизвестная ошибка"}\n\n" +
+                    "Хотите открыть инструкцию по ручной активации?",
+                    "Ручная активация",
+                    MessageBoxButton.YesNo, MessageBoxImage.Information);
+
+                if (manualResult == MessageBoxResult.Yes)
+                {
+                    // Показываем инструкцию для ручного запуска
+                    MessageBox.Show(
+                        "Ручной запуск MAS:\n\n" +
+                        "1. Откройте PowerShell от имени Администратора\n" +
+                        "2. Скопируйте и вставьте команду:\n\n" +
+                        "irm https://get.activated.win | iex\n\n" +
+                        "Или скачайте скрипт вручную:\n" +
+                        "https://massgrave.dev/get","Ручная активация", MessageBoxButton.OK, MessageBoxImage.Information);
+                    
+                    // Открываем браузер
+                    try { Process.Start("explorer.exe", "https://massgrave.dev"); } catch { }
+                }
+            }
+            else
+            {
+                AddLog("MAS завершён. Проверьте статус в Параметры → Обновление и безопасность → Активация.");
+            }
 
             IsBusy = false;
         }
@@ -2116,13 +2170,7 @@ namespace WpfApp3
 
 
     }
-}
 
-
-
-
-namespace WpfApp3
-{
     public class RelayCommand : ICommand
     {
         private readonly Action _execute;
