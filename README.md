@@ -2,8 +2,8 @@
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue)
 ![.NET](https://img.shields.io/badge/.NET-8.0-purple)
-![Downloads](https://img.shields.io/github/downloads/Shuragen4ik/Shuragen4ik-tool/total?color=brightgreen&label=downloads&logo=github)
 ![License](https://img.shields.io/badge/License-GPL--3.0-green)
+![Downloads](https://img.shields.io/github/downloads/SanyaSavin/Shuragen4ik_tool/total?color=purple)
 ![Version](https://img.shields.io/badge/Version-1.3.1-orange)
 
 ## 📋 Описание
